@@ -1,0 +1,316 @@
+#include <Encoder.h>
+#include <math.h>
+#include <Wire.h>
+
+bool A, B, C, D;
+double target_x= 0.0;
+double target_y = 0.0;
+const float V = 15.12 ;
+
+volatile double error_x;
+volatile double error_y;
+
+volatile double W1, W2, W3, W4;
+volatile double currentPosition_x;
+volatile double currentPosition_y;
+
+volatile double distance_x;
+volatile double distance_y;
+
+volatile double vx=0, vy=0;
+volatile float w = 0;   //  orientation fix
+
+double Kp_x =1.9, Ki_x = 0.034, Kd = 0.0,Ki_y = 0.02, Kp_y = 1.7;
+
+volatile double integral_x=0;
+volatile double integral_y=0;
+
+volatile double der_x=0;
+volatile double der_y=0;
+
+float prev_error_x;
+float prev_error_y;
+
+float R = 0.05;  // Radius of wheel
+float a = 0.225;
+
+// ================== Motors ==================
+int motor_1pin_1 =11;
+int motor_1pin_2 =12;
+
+int motor_2pin_1 = 5;
+int motor_2pin_2 = 4;
+
+int motor_3pin_1 = 7;
+int motor_3pin_2 = 6;
+
+int motor_4pin_1 =10;
+int motor_4pin_2 =9;
+
+// ================== Encoders ==================
+Encoder myEnc1(18, 19);
+Encoder myEnc2(2, 3);
+
+long oldPosition_x = -999;
+long oldPosition_y = -999;
+
+// ================== IMU ==================
+const int MPU_ADDR = 0x68;
+volatile float yaw = 0.0, gyro_z_offset = 0.0, prevYaw = 0.0, actual_yaw = 0.0;
+volatile float target_yaw = 0.0,error_yaw;
+unsigned long prevTime = 0;
+const float alpha = 0.75, Kpm = 1.0 , Kim = 0.01;
+
+// ================== Waypoints ==================
+struct Waypoint {
+  double x;
+  double y;
+};
+
+const int NUM_WAYPOINTS = 3;
+Waypoint path[NUM_WAYPOINTS] = {
+  {1.0, 1.0},
+  {1.0, 0.0},
+  {0.0, 0.0},
+  //{0.0, 0.0}
+};
+
+int currentWP = 0;
+
+// ================== Setup ==================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.beginTransmission(MPU_ADDR);
+  if (Wire.endTransmission() != 0) {
+    Serial.println("MPU6050 not found!");
+    while (1);
+  }
+
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  delay(1000);
+
+  long sum = 0;
+  for (int i = 0; i < 200; i++)
+  {
+    sum += readGyroZ();
+    delay(5);
+  }
+  gyro_z_offset = sum / 200.0;
+
+  int prevTime = micros();
+  delay(3000);
+  pinMode(motor_1pin_1, OUTPUT);
+  pinMode(motor_1pin_2, OUTPUT);
+  pinMode(motor_2pin_1, OUTPUT);
+  pinMode(motor_2pin_2, OUTPUT);
+  pinMode(motor_3pin_1, OUTPUT);
+  pinMode(motor_3pin_2, OUTPUT);
+  pinMode(motor_4pin_1, OUTPUT);
+  pinMode(motor_4pin_2, OUTPUT);
+
+  //  Start with first waypoint
+  target_x = path[currentWP].x;
+  target_y = path[currentWP].y;
+  //Serial.println("Starting square path...");
+}
+
+// ================== Main Loop ==================
+void loop() {
+  // --- IMU yaw maintain (but w=0, so no turn control needed) ---
+  int16_t gz_raw = readGyroZ();
+  float gz_rads = ((gz_raw - gyro_z_offset) / 131.0) ;
+
+  unsigned long now = micros();
+  float dt = (now - prevTime) / 1e6;
+  prevTime = now;
+  yaw += gz_rads * dt;
+
+  actual_yaw = alpha * yaw + (1 - alpha) * prevYaw;
+  prevYaw = yaw;
+  error_yaw = target_yaw - actual_yaw;
+  w = Kpm *error_yaw; //  orientation fix
+
+  // --- Encoders for Odometry ---
+  long newPosition_x = myEnc1.read();
+  long newPosition_y = myEnc2.read();
+
+  if (newPosition_x != oldPosition_x) 
+   {
+    oldPosition_x = newPosition_x;}
+  if (newPosition_y != oldPosition_y)
+  {
+     oldPosition_y = newPosition_y;}
+
+  target_x = path[currentWP].x;
+  target_y = path[currentWP].y;
+
+  Serial.println("Start") ;
+  Serial.print(",target_x :");
+  Serial.print(target_x);
+  Serial.print(",target_y :");
+  Serial.print(target_y);
+
+  distance_x = newPosition_x * ((18.7) / 1000000.0);
+  distance_y = newPosition_y * ((2 * (22 / 7) * 2.75) / 1000000.0);
+
+  currentPosition_x = distance_x;
+  currentPosition_y = distance_y;
+
+  // --- Error calculation ---
+  error_x = target_x - currentPosition_x;
+  error_y = target_y - currentPosition_y;
+
+  Serial.print(",error_x") ;
+  Serial.print(error_x) ;
+
+  Serial.print(",error_y") ;
+  Serial.print(error_y) ;
+
+  // --- Waypoint check ---
+
+  if (fabs(error_x) < 0.05 && fabs(error_y) < 0.05) {
+  if (currentWP >= NUM_WAYPOINTS - 1) {while(1) ; }// loop
+    currentWP++ ;
+  }
+
+  // --- PID control (vx, vy) ---
+  if(fabs(error_x)<1 && fabs(error_y)<1)
+  {
+   integral_x += error_x * dt;
+  }
+  else if(fabs(error_x)>1 && fabs(error_y)>1)
+  {
+  integral_y += error_y * dt;
+  }
+
+  vx = Kp_x * error_x + Ki_x * integral_x + der_x;
+  vy = Kp_y * error_y + Ki_y * integral_y + der_y;
+
+  prev_error_x = error_x;
+  prev_error_y = error_y;
+
+
+  W1 = ((vx - vy - a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  W2 = ((vx + vy - a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  W3 = ((vx - vy + a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  W4 = ((vx + vy + a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+
+  Serial.print(",W1:");
+  Serial.print(W1);
+  Serial.print(",W2");
+  Serial.print(W2);
+  Serial.print(",W3");
+  Serial.print(W3);
+  Serial.print(",W4");
+  Serial.print(W4);
+  
+
+  double max1 = max(W1, W2);
+  double max2 = max(W3, W4);
+  double maxw = max(max1, max2);
+  if (maxw > 400) {
+    W1 = (W1 * 400) / maxw;
+    W2 = (W2 * 400) / maxw;
+    W3 = (W3 * 400) / maxw;
+    W4 = (W4 * 400) / maxw;
+  }
+
+  if (W1 < 0) {
+    A = false;
+  } else if (W1 > 0) {
+    A = true;
+  }
+  if (W2 < 0) {
+    B = false;
+  } else if (W2 > 0) {
+    B = true;
+  }
+  if (W3 < 0) {
+    C = false;
+  } else if (W3 > 0) {
+    C = true;
+  }
+  if (W4 < 0) {
+    D = false;
+  } else if (W4 > 0) {
+    D = true;
+  }
+
+
+
+  double w_wheel1 = ((fabs(W1) / 645.0) * 255);
+  double w_wheel2 = ((fabs(W2) / 645.0) * 255);
+  double w_wheel3 = ((fabs(W3) / 645.0) * 255);
+  double w_wheel4 = ((fabs(W4) / 645.0) * 255);
+
+  // delay(1000);
+   Serial.print(w_wheel1);
+//   Serial.print(",");
+   Serial.print(w_wheel2);
+//   Serial.print(",");
+   Serial.print(w_wheel3);
+//   Serial.print(",");
+   Serial.print(w_wheel4);
+
+  // && error_y <= 5 && error_y >= -5)
+  if (error_x == 0 && error_x == 0) {
+    //  Serial.print("STOP");
+    analogWrite(motor_1pin_1, 0);
+    analogWrite(motor_2pin_1, 0);
+    analogWrite(motor_3pin_1, 0);
+    analogWrite(motor_4pin_1, 0);
+  } else {
+    analogWrite(motor_1pin_1, w_wheel1);
+    digitalWrite(motor_1pin_2, A);
+    analogWrite(motor_2pin_1, w_wheel2);
+    digitalWrite(motor_2pin_2, B);
+    analogWrite(motor_3pin_1, w_wheel3);
+    digitalWrite(motor_3pin_2, C);
+    analogWrite(motor_4pin_1, w_wheel4);
+    digitalWrite(motor_4pin_2, D);
+  }
+  // delay(1000);
+  Serial.print("error x: ");
+  Serial.println(error_x);
+  Serial.print("prev error x: ");
+  Serial.println(prev_error_x);
+
+  prev_error_x = error_x;
+  prev_error_y = error_y;
+
+  Serial.print("error x: ");
+  Serial.println(error_x);
+  Serial.print("prev error x: ");
+  Serial.println(prev_error_x);
+
+  //   int16_t gz_raw = readGyroZ();
+  // float gz_rads = ((gz_raw - gyro_z_offset) / 131.0) ;
+
+  // unsigned long now = micros();
+  // float dt = (now - prevTime) / 1e6;
+  // prevTime = now;
+  // yaw += gz_rads * dt;
+
+  // actual_yaw = alpha * yaw + (1 - alpha) * prevYaw;
+  // prevYaw = yaw;
+
+  // Serial.print(-180);
+  // Serial.print(" ");
+  // Serial.print(actual_yaw, 6);
+  // Serial.print(" ");
+  // Serial.println(180);
+//  delay(100);
+}
+
+int16_t readGyroZ() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x47);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 2, true);
+  return (Wire.read() << 8 |Wire.read());
+}
