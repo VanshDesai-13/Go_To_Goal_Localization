@@ -1,0 +1,263 @@
+#include <Encoder.h>
+#include <math.h>
+#include <Wire.h>
+
+bool A, B, C, D;
+double target_x= 1.0;
+double target_y =1.0;
+double target_x2= 2.0;
+double target_y2 = 0.0;
+double target_x3= 1.0;
+double target_y3 = 1.0*(-1);
+double target_x4= 0.0;
+double target_y4 = 0.0;
+volatile double error_x;
+volatile double error_y;
+
+volatile double w1, w2, w3, w4;
+volatile double currentPosition_x;
+volatile double currentPosition_y;
+
+volatile double distance_x;
+volatile double distance_y;
+
+volatile double vx=0, vy=0;
+volatile float w = 0;   //  orientation fix
+
+double Kp_x =1.9, Ki_x = 0.034, Kd = 0.0,Ki_y = 0.02, Kp_y = 1.7;
+
+volatile double integral_x=0;
+volatile double integral_y=0;
+
+volatile double der_x=0;
+volatile double der_y=0;
+
+float prev_error_x;
+float prev_error_y;
+
+float R = 0.05;  // Radius of wheel
+float a = 0.225;
+
+int motor_1pin_1 =11;
+int motor_1pin_2 =12;
+
+int motor_2pin_1 = 5;
+int motor_2pin_2 = 4;
+
+int motor_3pin_1 = 7;
+int motor_3pin_2 = 6;
+
+int motor_4pin_1 =10;
+int motor_4pin_2 =9;
+
+Encoder myEnc1(18, 19);
+Encoder myEnc2(2, 3);
+
+long oldPosition_x = -999;
+long oldPosition_y = -999;
+
+const int MPU_ADDR = 0x68;
+volatile float yaw = 0.0, gyro_z_offset = 0.0, prevYaw = 0.0, actual_yaw = 0.0;
+volatile float target_yaw = 0.0,error_yaw;
+unsigned long prevTime = 0;
+const float alpha = 0.75, Kpm = 1.0 , Kim = 0.01;
+
+int c=0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.beginTransmission(MPU_ADDR);
+  if (Wire.endTransmission() != 0) {
+    Serial.println("MPU6050 not found!");
+    while (1);
+  }
+
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0);
+  Wire.endTransmission(true);
+
+  delay(1000);
+
+  long sum = 0;
+  for (int i = 0; i < 200; i++)
+  {
+    sum += readGyroZ();
+    delay(5);
+  }
+  gyro_z_offset = sum / 200.0;
+
+  int prevTime = micros();
+  delay(3000);
+  pinMode(motor_1pin_1, OUTPUT);
+  pinMode(motor_1pin_2, OUTPUT);
+  pinMode(motor_2pin_1, OUTPUT);
+  pinMode(motor_2pin_2, OUTPUT);
+  pinMode(motor_3pin_1, OUTPUT);
+  pinMode(motor_3pin_2, OUTPUT);
+  pinMode(motor_4pin_1, OUTPUT);
+  pinMode(motor_4pin_2, OUTPUT);
+
+}
+
+void loop() {
+  int16_t gz_raw = readGyroZ();
+  float gz_rads = ((gz_raw - gyro_z_offset) / 131.0) ;
+
+  unsigned long now = micros();
+  float dt = (now - prevTime) / 1e6;
+  prevTime = now;
+  yaw += gz_rads * dt;
+
+  actual_yaw = alpha * yaw + (1 - alpha) * prevYaw;
+  prevYaw = yaw;
+  error_yaw = target_yaw - actual_yaw;
+  w = Kpm *error_yaw; 
+
+  long newPosition_x = myEnc1.read();
+  long newPosition_y = myEnc2.read();
+
+  if (newPosition_x != oldPosition_x) 
+   {
+    oldPosition_x = newPosition_x;}
+  if (newPosition_y != oldPosition_y)
+  {
+     oldPosition_y = newPosition_y;
+  }
+
+  Serial.println("Start") ;
+  Serial.print(",target_x :");
+  Serial.print(target_x);
+  Serial.print(",target_y :");
+  Serial.print(target_y);
+
+  distance_x = newPosition_x * ((18.7) / 1000000.0);
+  distance_y = newPosition_y * ((18.7) / 1000000.0);
+
+  currentPosition_x = distance_x;
+  currentPosition_y = distance_y;
+
+  error_x = target_x - currentPosition_x;
+  error_y = target_y - currentPosition_y;
+
+  Serial.print(",error_x") ;
+  Serial.print(error_x) ;
+
+  Serial.print(",error_y") ;
+  Serial.print(error_y) ;
+
+
+  if (fabs(error_x) < 0.05 && fabs(error_y) < 0.05) {
+    c++;  
+   }
+  if(c==1)
+  {
+    target_x=target_x2;
+    target_y=target_y2;
+  }
+  else if(c==2)
+  {
+    target_x=target_x3;
+    target_y=target_y3;
+  }
+  else if(c==3)
+  {
+    target_x=target_x4;
+    target_y=target_y4;
+  }
+  else if(c==4)
+  {
+    analogWrite(motor_1pin_1,0);
+    analogWrite(motor_2pin_1,0);
+    analogWrite(motor_3pin_1,0);
+    analogWrite(motor_4pin_1,0);
+  }
+
+  integral_x += error_x * dt;
+  integral_y += error_y * dt;
+
+  vx = Kp_x * error_x + Ki_x * integral_x + der_x;
+  vy = Kp_y * error_y + Ki_y * integral_y + der_y;
+
+  prev_error_x = error_x;
+  prev_error_y = error_y;
+
+
+  w1 = ((vx - vy - a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  w2 = ((vx + vy - a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  w3 = ((vx - vy + a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+  w4 = ((vx + vy + a * w) / (R * 2 * sqrt(2)))*(30.0/PI);
+
+  Serial.print(",W1:");
+  Serial.print(w1);
+  Serial.print(",W2");
+  Serial.print(w2);
+  Serial.print(",W3");
+  Serial.print(w3);
+  Serial.print(",W4");
+  Serial.print(w4);
+  
+
+  double max1 = max(w1, w2);
+  double max2 = max(w3, w4);
+  double maxw = max(max1, max2);
+  if (maxw > 400) {
+    w1 = (w1 * 400) / maxw;
+    w2 = (w2 * 400) / maxw;
+    w3 = (w3 * 400) / maxw;
+    w4 = (w4 * 400) / maxw;
+  }
+
+  if (w1 < 0) {
+    A = false;
+  } else if (w1 > 0) {
+    A = true;
+  }
+  if (w2 < 0) {
+    B = false;
+  } else if (w2 > 0) {
+    B = true;
+  }
+  if (w3 < 0) {
+    C = false;
+  } else if (w3 > 0) {
+    C = true;
+  }
+  if (w4 < 0) {
+    D = false;
+  } else if (w4 > 0) {
+    D = true;
+  }
+  double w_wheel1 = ((fabs(w1) / 645.0) * 255);
+  double w_wheel2 = ((fabs(w2) / 645.0) * 255);
+  double w_wheel3 = ((fabs(w3) / 645.0) * 255);
+  double w_wheel4 = ((fabs(w4) / 645.0) * 255);
+
+  if (error_x == 0 && error_y == 0) {
+    //  Serial.print("STOP");
+    analogWrite(motor_1pin_1, 0);
+    analogWrite(motor_2pin_1, 0);
+    analogWrite(motor_3pin_1, 0);
+    analogWrite(motor_4pin_1, 0);
+  } else {
+    analogWrite(motor_1pin_1, w_wheel1);
+    digitalWrite(motor_1pin_2, A);
+    analogWrite(motor_2pin_1, w_wheel2);
+    digitalWrite(motor_2pin_2, B);
+    analogWrite(motor_3pin_1, w_wheel3);
+    digitalWrite(motor_3pin_2, C);
+    analogWrite(motor_4pin_1, w_wheel4);
+    digitalWrite(motor_4pin_2, D);
+  }
+  prev_error_x = error_x;
+  prev_error_y = error_y;
+}
+
+int16_t readGyroZ() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x47);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 2, true);
+  return (Wire.read() << 8 |Wire.read());
+}
