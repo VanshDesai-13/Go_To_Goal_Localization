@@ -1,0 +1,49 @@
+#include <Encoder.h>
+
+volatile double distance_x;
+
+volatile double error_x;
+
+volatile double currentPosition_x;
+
+volatile double targetPosition_x=650;
+
+int initial=0;
+int const kp = (10/650);
+float velocity ;
+const int PWM = 6;
+  
+Encoder myEnc_x(2, 3);
+
+void setup() {
+  Serial.begin(9600);
+  Serial.println("Basic Encoder Test:");
+  pinMode(PWM,OUTPUT);
+}
+
+long oldPosition_x  = -999;
+
+void loop() 
+{
+  long newPosition_x = myEnc_x.read();
+  if (newPosition_x != oldPosition_x)
+   {
+    oldPosition_x = newPosition_x;
+   }
+ error_x = targetPosition_x - newPosition_x;  
+  velocity = (kp * error_x);
+  
+  Serial.println(error_x);
+  if( error_x<=10 || error_x>=0)
+  {
+    Serial.print("stop");
+    delay(1000);
+    //targetPosition_x=initial;
+  }
+  velocity = (kp * error_x);
+  else
+  {
+  velocity = (kp * error_x );
+  analogWrite(PWM,OUTPUT);
+  } 
+}
