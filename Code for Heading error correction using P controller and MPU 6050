@@ -1,0 +1,64 @@
+#include <Wire.h>
+
+const int MPU_ADDR = 0x68;
+float yaw = 0.0, gyro_z_offset = 0.0, prevYaw = 0.0, actual_yaw = 0.0;
+unsigned long prevTime = 0;
+float target_yaw=0;
+const float alpha = 0.75;Kpm = 1.0 , Kim = 0.01;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  // Check if MPU6050 is connected
+  Wire.beginTransmission(MPU_ADDR);
+  if (Wire.endTransmission() != 0) {
+    Serial.println("MPU6050 not found!");
+    while (1); 
+  }
+
+  // Wake MPU6050
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); 
+  Wire.write(0); 
+  Wire.endTransmission(true);
+
+  delay(1000);
+
+
+  long sum = 0;
+  for (int i = 0; i < 200; i++) { 
+    sum += readGyroZ(); 
+    delay(5); 
+  }
+  gyro_z_offset = sum / 200.0;
+  Serial.print("Calibration offset: "); 
+  Serial.println(gyro_z_offset);
+
+  prevTime = micros();
+}
+
+void loop() {
+  int16_t gz_raw = readGyroZ();
+  float gz_rads = ((gz_raw - gyro_z_offset) / 131.0) ;
+
+  unsigned long now = micros();
+  float dt = (now - prevTime) / 1e6;  
+  prevTime = now;
+  yaw += gz_rads * dt;
+
+  // Low pass filter
+  actual_yaw = alpha * yaw + (1 - alpha) * prevYaw;
+  prevYaw = yaw;
+  error_yaw = target_yaw - actual_yaw;
+  w = Kpm *error_yaw; 
+
+}
+
+int16_t readGyroZ() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x47); 
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 2, true);
+  return (Wire.read() << 8) | Wire.read();
+}
